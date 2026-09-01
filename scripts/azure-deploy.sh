@@ -49,8 +49,8 @@ echo "===> 3) Build e push das imagens direto no ACR (docker build + docker push
 
 az acr login --name "$ACR_NAME"
 
-docker build -t "${DB_IMAGE_NAME}:${IMAGE_TAG}" -f ../docker/Dockerfile.db ../docker/
-docker build -t "${APP_IMAGE_NAME}:${IMAGE_TAG}" -f ../Dockerfile.app ..
+docker build -t "${DB_IMAGE_NAME}:${IMAGE_TAG}" -f docker/Dockerfile.db docker/
+docker build -t "${APP_IMAGE_NAME}:${IMAGE_TAG}" -f docker/Dockerfile.app .
 
 # ---- Testar localmente antes do push (docker-compose) ----
 # docker compose -f docker-compose.yml up -d   (ver seção "Testes locais" do README)
