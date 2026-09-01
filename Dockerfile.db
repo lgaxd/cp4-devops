@@ -1,0 +1,12 @@
+# =========================================================
+# Dockerfile.db - Imagem do banco Oracle Database Free 23c
+# já com o DDL do SpaceCrop embutido na imagem
+# =========================================================
+FROM gvenzl/oracle-free:23-slim
+
+# Script de inicialização (DDL de tabelas, sequences e índices)
+# é executado automaticamente pela imagem oficial na primeira
+# subida do container (pasta /container-entrypoint-initdb.d/)
+COPY spacecrop_ddl.sql /container-entrypoint-initdb.d/01-ddl.sql
+
+EXPOSE 1521
