@@ -1,0 +1,54 @@
+services:
+  oracle-db:
+    build:
+      context: ./docker
+      dockerfile: Dockerfile.db
+    image: rm561413-spacecrop-db:local
+    container_name: rm561413-spacecrop-db-local
+    restart: unless-stopped
+    environment:
+      ORACLE_PASSWORD: ${ORACLE_PASSWORD}
+      APP_USER: ${APP_USER:-spacecrop}
+      APP_USER_PASSWORD: ${APP_USER_PASSWORD}
+    ports:
+      - "1521:1521"
+    volumes:
+      - oracle-data:/opt/oracle/oradata
+    networks:
+      - spacecrop-network
+    healthcheck:
+      test: ["CMD-SHELL", "healthcheck.sh"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 60s
+
+  spacecrop-api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.app
+    image: rm561413-spacecrop-app:local
+    container_name: rm561413-spacecrop-app-local
+    restart: unless-stopped
+    depends_on:
+      oracle-db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: jdbc:oracle:thin:@//oracle-db:1521/FREEPDB1
+      DATABASE_USERNAME: ${APP_USER:-spacecrop}
+      DATABASE_PASSWORD: ${APP_USER_PASSWORD}
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_EXPIRATION: ${JWT_EXPIRATION:-86400000}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:3000,http://localhost:8080}
+    ports:
+      - "8080:8080"
+    networks:
+      - spacecrop-network
+
+networks:
+  spacecrop-network:
+    driver: bridge
+
+volumes:
+  oracle-data:
+    name: spacecrop-oracle-data
