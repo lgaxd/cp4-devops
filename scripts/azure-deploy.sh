@@ -6,6 +6,14 @@
 # =====================================================================
 set -e
 
+# Carrega as variáveis do arquivo .env localizado na raiz do projeto automaticamente
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -f "$SCRIPT_DIR/../.env" ]; then
+  set -a
+  export $(grep -v '^#' "$SCRIPT_DIR/../.env" | tr -d '\r' | xargs)
+  set +a
+fi
+
 # --------------------------- VARIÁVEIS --------------------------------
 RM="561413"
 RESOURCE_GROUP="rm${RM}-spacecrop-rg"
