@@ -1,45 +1,43 @@
 #!/bin/bash
+# =====================================================================
+# azure-deploy.sh
+# Provisiona toda a infraestrutura do Checkpoint (ACR + ACI) via Azure CLI
+# Grupo: SpaceCrop DevOps | RM representante: 561413
+# =====================================================================
+set -e
 
-set -euo pipefail
-
-# ============================================================
-# SpaceCrop - Azure Deploy
-# Checkpoint DevOps - ACR + ACI + Azure File
-# RM: 561413
-# ============================================================
-
+# --------------------------- .env (raiz do projeto) --------------------
+# Este script fica em scripts/, então a raiz do projeto é um nível acima.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 ENV_FILE="$PROJECT_DIR/.env"
 
-# ------------------------------------------------------------
-# 1. Carregar .env de forma segura
-# ------------------------------------------------------------
-
 if [ ! -f "$ENV_FILE" ]; then
     echo "ERRO: arquivo .env não encontrado em:"
-    echo "$ENV_FILE"
+    echo "  $ENV_FILE"
+    echo ""
+    echo "Copie o .env.example para .env na raiz do projeto e preencha os valores:"
+    echo "  cp .env.example .env"
     exit 1
 fi
 
-# Remove CRLF caso o arquivo tenha vindo do Windows
+# Remove CRLF (caso o arquivo tenha vindo de um editor no Windows)
 sed -i 's/\r$//' "$ENV_FILE"
 
+# Carrega todas as variáveis do .env no ambiente deste script
 set -a
 source "$ENV_FILE"
 set +a
 
-# ------------------------------------------------------------
-# 2. Variáveis fixas da infraestrutura
-# ------------------------------------------------------------
+echo "Variáveis carregadas de: $ENV_FILE"
 
-RM="561413"
-
+# --------------------------- VARIÁVEIS --------------------------------
+RM="${RM:-561413}"                           # <-- RM do representante do grupo (prefixo obrigatório)
 RESOURCE_GROUP="rm${RM}-spacecrop-rg"
 LOCATION="brazilsouth"
 
-ACR_NAME="rm${RM}acr"
-STORAGE_ACCOUNT="rm${RM}storage"
+ACR_NAME="rm${RM}acr"                        # nomes de ACR só podem ter letras/números
+STORAGE_ACCOUNT="rm${RM}storage"             # idem para storage account
 FILE_SHARE_NAME="oracle-data"
 
 DB_IMAGE_NAME="rm${RM}-spacecrop-db"
@@ -52,456 +50,148 @@ ACI_APP_NAME="rm${RM}-app"
 DB_DNS_LABEL="rm${RM}-spacecrop-db"
 APP_DNS_LABEL="rm${RM}-spacecrop-app"
 
-# ------------------------------------------------------------
-# 3. Configuração da aplicação
-# ------------------------------------------------------------
+# Credenciais do banco (troque antes de rodar / use variáveis de ambiente)
+ORACLE_PASSWORD="${ORACLE_PASSWORD:?defina a variável ORACLE_PASSWORD antes de rodar}"
+APP_USER="${APP_USER:-spacecrop}"
+APP_USER_PASSWORD="${APP_USER_PASSWORD:?defina a variável APP_USER_PASSWORD antes de rodar}"
 
-# Usuário Oracle FIXO para evitar configuração inconsistente
-APP_USER="spacecrop"
-
-ORACLE_PASSWORD="${ORACLE_PASSWORD:-}"
-APP_USER_PASSWORD="${APP_USER_PASSWORD:-}"
-JWT_SECRET="${JWT_SECRET:-}"
+JWT_SECRET="${JWT_SECRET:?defina a variável JWT_SECRET antes de rodar}"
 JWT_EXPIRATION="${JWT_EXPIRATION:-86400000}"
 
-# ------------------------------------------------------------
-# 4. Validação das variáveis
-# ------------------------------------------------------------
-
-if [ -z "$ORACLE_PASSWORD" ]; then
-    echo "ERRO: ORACLE_PASSWORD não foi definida no .env"
-    exit 1
-fi
-
-if [ -z "$APP_USER_PASSWORD" ]; then
-    echo "ERRO: APP_USER_PASSWORD não foi definida no .env"
-    exit 1
-fi
-
-if [ -z "$JWT_SECRET" ]; then
-    echo "ERRO: JWT_SECRET não foi definida no .env"
-    exit 1
-fi
-
-if [ -z "$JWT_EXPIRATION" ]; then
-    echo "ERRO: JWT_EXPIRATION não foi definida."
-    exit 1
-fi
-
-echo "============================================================"
-echo " SpaceCrop - Azure Deploy"
-echo "============================================================"
-echo "Resource Group : $RESOURCE_GROUP"
-echo "Location       : $LOCATION"
-echo "ACR            : $ACR_NAME"
-echo "Oracle User    : $APP_USER"
-echo "JWT Expiration : $JWT_EXPIRATION"
-echo "============================================================"
-
-echo ""
-echo "===> Validando Azure CLI..."
-
-az account show \
-    --query "{subscription:name, user:user.name}" \
-    -o table
-
-# ------------------------------------------------------------
-# 5. Resource Group
-# ------------------------------------------------------------
-
-echo ""
 echo "===> 1) Criando Resource Group..."
-
 az group create \
-    --name "$RESOURCE_GROUP" \
-    --location "$LOCATION" \
-    --output none
+  --name "$RESOURCE_GROUP" \
+  --location "$LOCATION"
 
-# ------------------------------------------------------------
-# 6. ACR
-# ------------------------------------------------------------
-
-echo ""
-echo "===> 2) Criando ACR..."
-
+echo "===> 2) Criando Azure Container Registry (ACR)..."
 az acr create \
-    --resource-group "$RESOURCE_GROUP" \
-    --name "$ACR_NAME" \
-    --sku Basic \
-    --admin-enabled true \
-    --output none
+  --resource-group "$RESOURCE_GROUP" \
+  --name "$ACR_NAME" \
+  --sku Basic \
+  --admin-enabled true
 
-ACR_LOGIN_SERVER=$(az acr show \
-    --name "$ACR_NAME" \
-    --query loginServer \
-    -o tsv)
+echo "===> 3) Build e push das imagens direto no ACR (docker build + docker push)"
+# Login no ACR (equivalente a docker login usando as credenciais do registry)
+az acr login --name "$ACR_NAME"
 
-echo "ACR: $ACR_LOGIN_SERVER"
+# ---- Build local das imagens (etapa 1 e 2 do checklist) ----
+docker build -t "${DB_IMAGE_NAME}:${IMAGE_TAG}" -f docker/Dockerfile.db docker/
+docker build -t "${APP_IMAGE_NAME}:${IMAGE_TAG}" -f docker/Dockerfile.app .
 
-# ------------------------------------------------------------
-# 7. Build local
-# ------------------------------------------------------------
+# ---- Testar localmente antes do push (docker-compose) ----
+# docker compose -f docker-compose.yml up -d   (ver seção "Testes locais" do README)
 
-echo ""
-echo "===> 3) Build local das imagens..."
+# ---- Tag apontando para o ACR ----
+ACR_LOGIN_SERVER=$(az acr show --name "$ACR_NAME" --query loginServer -o tsv)
+docker tag "${DB_IMAGE_NAME}:${IMAGE_TAG}"  "${ACR_LOGIN_SERVER}/${DB_IMAGE_NAME}:${IMAGE_TAG}"
+docker tag "${APP_IMAGE_NAME}:${IMAGE_TAG}" "${ACR_LOGIN_SERVER}/${APP_IMAGE_NAME}:${IMAGE_TAG}"
 
-docker build \
-    -t "${DB_IMAGE_NAME}:${IMAGE_TAG}" \
-    -f docker/Dockerfile.db \
-    docker/
+# ---- Push das imagens para o ACR ----
+docker push "${ACR_LOGIN_SERVER}/${DB_IMAGE_NAME}:${IMAGE_TAG}"
+docker push "${ACR_LOGIN_SERVER}/${APP_IMAGE_NAME}:${IMAGE_TAG}"
 
-docker build \
-    -t "${APP_IMAGE_NAME}:${IMAGE_TAG}" \
-    -f docker/Dockerfile.app \
-    .
-
-echo ""
-echo "Imagens construídas."
-
-# ------------------------------------------------------------
-# 8. Login ACR
-# ------------------------------------------------------------
-
-echo ""
-echo "===> 4) Login no ACR..."
-
-az acr login \
-    --name "$ACR_NAME"
-
-# ------------------------------------------------------------
-# 9. Tag das imagens
-# ------------------------------------------------------------
-
-docker tag \
-    "${DB_IMAGE_NAME}:${IMAGE_TAG}" \
-    "${ACR_LOGIN_SERVER}/${DB_IMAGE_NAME}:${IMAGE_TAG}"
-
-docker tag \
-    "${APP_IMAGE_NAME}:${IMAGE_TAG}" \
-    "${ACR_LOGIN_SERVER}/${APP_IMAGE_NAME}:${IMAGE_TAG}"
-
-# ------------------------------------------------------------
-# 10. Push banco
-# ------------------------------------------------------------
-
-echo ""
-echo "===> 5) Push da imagem do banco..."
-
-docker push \
-    "${ACR_LOGIN_SERVER}/${DB_IMAGE_NAME}:${IMAGE_TAG}"
-
-# ------------------------------------------------------------
-# 11. Push aplicação
-# ------------------------------------------------------------
-
-echo ""
-echo "===> 6) Push da imagem da aplicação..."
-
-docker push \
-    "${ACR_LOGIN_SERVER}/${APP_IMAGE_NAME}:${IMAGE_TAG}"
-
-# ------------------------------------------------------------
-# 12. Storage Account
-# ------------------------------------------------------------
-
-echo ""
-echo "===> 7) Criando Storage Account..."
-
+echo "===> 4) Criando Conta de Armazenamento + File Share (persistência do Oracle)"
 az storage account create \
-    --resource-group "$RESOURCE_GROUP" \
-    --name "$STORAGE_ACCOUNT" \
-    --location "$LOCATION" \
-    --sku Standard_LRS \
-    --kind StorageV2 \
-    --output none
+  --resource-group "$RESOURCE_GROUP" \
+  --name "$STORAGE_ACCOUNT" \
+  --location "$LOCATION" \
+  --sku Standard_LRS \
+  --kind StorageV2
 
 STORAGE_KEY=$(az storage account keys list \
-    --resource-group "$RESOURCE_GROUP" \
-    --account-name "$STORAGE_ACCOUNT" \
-    --query "[0].value" \
-    -o tsv)
+  --resource-group "$RESOURCE_GROUP" \
+  --account-name "$STORAGE_ACCOUNT" \
+  --query "[0].value" -o tsv)
 
-# ------------------------------------------------------------
-# 13. Azure File Share
-# ------------------------------------------------------------
+# A Storage Account recém-criada pode levar alguns segundos para o
+# endpoint de Files propagar. Tenta criar o share com retry em vez de
+# falhar direto com "ResourceNotFound".
+SHARE_CREATED=false
+for attempt in $(seq 1 10); do
+  if az storage share create \
+      --name "$FILE_SHARE_NAME" \
+      --account-name "$STORAGE_ACCOUNT" \
+      --account-key "$STORAGE_KEY" \
+      --quota 20 \
+      --output none 2>/tmp/share_create.log; then
+    SHARE_CREATED=true
+    break
+  fi
+  echo "Aguardando propagação do endpoint de Files (tentativa $attempt/10)..."
+  sleep 15
+done
 
-echo ""
-echo "===> 8) Criando Azure File Share..."
+if [ "$SHARE_CREATED" != true ]; then
+  echo ""
+  echo "ERRO: não foi possível criar o File Share após várias tentativas."
+  cat /tmp/share_create.log
+  exit 1
+fi
 
-az storage share create \
-    --account-name "$STORAGE_ACCOUNT" \
-    --account-key "$STORAGE_KEY" \
-    --name "$FILE_SHARE_NAME" \
-    --quota 10 \
-    --output none
+echo "File Share '$FILE_SHARE_NAME' criado com sucesso."
 
-# ------------------------------------------------------------
-# 14. Credenciais ACR
-# ------------------------------------------------------------
+echo "===> 5) Obtendo credenciais do ACR para o ACI"
+ACR_USERNAME=$(az acr credential show --name "$ACR_NAME" --query username -o tsv)
+ACR_PASSWORD=$(az acr credential show --name "$ACR_NAME" --query "passwords[0].value" -o tsv)
 
-ACR_USERNAME=$(az acr credential show \
-    --name "$ACR_NAME" \
-    --query username \
-    -o tsv)
-
-ACR_PASSWORD=$(az acr credential show \
-    --name "$ACR_NAME" \
-    --query "passwords[0].value" \
-    -o tsv)
-
-# ------------------------------------------------------------
-# 15. ACI Oracle
-# ------------------------------------------------------------
-
-echo ""
-echo "===> 9) Criando ACI do Oracle..."
-
+echo "===> 6) Criando o ACI do Banco de Dados (rm${RM}-db) com volume persistente"
 az container create \
-    --resource-group "$RESOURCE_GROUP" \
-    --name "$ACI_DB_NAME" \
-    --image "${ACR_LOGIN_SERVER}/${DB_IMAGE_NAME}:${IMAGE_TAG}" \
-    --registry-login-server "$ACR_LOGIN_SERVER" \
-    --registry-username "$ACR_USERNAME" \
-    --registry-password "$ACR_PASSWORD" \
-    --cpu 2 \
-    --memory 4 \
-    --os-type Linux \
-    --ports 1521 \
-    --ip-address Public \
-    --dns-name-label "$DB_DNS_LABEL" \
-    --environment-variables \
-        APP_USER="$APP_USER" \
-    --secure-environment-variables \
-        ORACLE_PASSWORD="$ORACLE_PASSWORD" \
-        APP_USER_PASSWORD="$APP_USER_PASSWORD" \
-    --azure-file-volume-account-name "$STORAGE_ACCOUNT" \
-    --azure-file-volume-account-key "$STORAGE_KEY" \
-    --azure-file-volume-share-name "$FILE_SHARE_NAME" \
-    --azure-file-volume-mount-path "/opt/oracle/oradata" \
-    --output none
+  --resource-group "$RESOURCE_GROUP" \
+  --name "$ACI_DB_NAME" \
+  --image "${ACR_LOGIN_SERVER}/${DB_IMAGE_NAME}:${IMAGE_TAG}" \
+  --registry-login-server "$ACR_LOGIN_SERVER" \
+  --registry-username "$ACR_USERNAME" \
+  --registry-password "$ACR_PASSWORD" \
+  --cpu 2 --memory 4 \
+  --os-type Linux \
+  --ports 1521 \
+  --ip-address Public \
+  --dns-name-label "$DB_DNS_LABEL" \
+  --environment-variables \
+      ORACLE_PASSWORD="$ORACLE_PASSWORD" \
+      APP_USER="$APP_USER" \
+      APP_USER_PASSWORD="$APP_USER_PASSWORD" \
+  --azure-file-volume-account-name "$STORAGE_ACCOUNT" \
+  --azure-file-volume-account-key "$STORAGE_KEY" \
+  --azure-file-volume-share-name "$FILE_SHARE_NAME" \
+  --azure-file-volume-mount-path "/mnt/backup"
 
+echo "===> Aguardando o banco iniciar (pode levar alguns minutos)..."
 DB_FQDN=$(az container show \
-    --resource-group "$RESOURCE_GROUP" \
-    --name "$ACI_DB_NAME" \
-    --query "ipAddress.fqdn" \
-    -o tsv)
+  --resource-group "$RESOURCE_GROUP" \
+  --name "$ACI_DB_NAME" \
+  --query "ipAddress.fqdn" -o tsv)
+echo "Banco disponível em: ${DB_FQDN}:1521"
+sleep 180
 
-echo ""
-echo "Banco: $DB_FQDN:1521"
-
-# ------------------------------------------------------------
-# 16. Aguardar Oracle
-# ------------------------------------------------------------
-
-echo ""
-echo "===> Aguardando Oracle iniciar..."
-
-MAX_ATTEMPTS=60
-DB_READY=false
-
-for ((i=1; i<=MAX_ATTEMPTS; i++)); do
-
-    CURRENT_STATE=$(az container show \
-        --resource-group "$RESOURCE_GROUP" \
-        --name "$ACI_DB_NAME" \
-        --query "containers[0].instanceView.currentState.state" \
-        -o tsv 2>/dev/null || true)
-
-    DETAIL_STATUS=$(az container show \
-        --resource-group "$RESOURCE_GROUP" \
-        --name "$ACI_DB_NAME" \
-        --query "containers[0].instanceView.currentState.detailStatus" \
-        -o tsv 2>/dev/null || true)
-
-    echo "Tentativa $i/$MAX_ATTEMPTS - estado: ${CURRENT_STATE:-unknown} - ${DETAIL_STATUS:-unknown}"
-
-    if [[ "$DETAIL_STATUS" == *"CrashLoopBackOff"* ]] || \
-       [[ "$DETAIL_STATUS" == *"Error"* ]]; then
-
-        echo ""
-        echo "ERRO: Oracle entrou em estado de falha."
-        echo ""
-        echo "Estado atual:"
-        az container show \
-            --resource-group "$RESOURCE_GROUP" \
-            --name "$ACI_DB_NAME" \
-            --query "containers[0].instanceView" \
-            -o json
-
-        exit 1
-    fi
-
-    if [ "$CURRENT_STATE" = "Running" ]; then
-
-        if timeout 5 bash -c "</dev/tcp/${DB_FQDN}/1521" 2>/dev/null; then
-            echo "Porta 1521 acessível."
-
-            # Mantém uma janela para o Oracle terminar sua inicialização
-            echo "Aguardando inicialização completa do Oracle..."
-            sleep 30
-
-            CURRENT_STATE=$(az container show \
-                --resource-group "$RESOURCE_GROUP" \
-                --name "$ACI_DB_NAME" \
-                --query "containers[0].instanceView.currentState.state" \
-                -o tsv 2>/dev/null || true)
-
-            DETAIL_STATUS=$(az container show \
-                --resource-group "$RESOURCE_GROUP" \
-                --name "$ACI_DB_NAME" \
-                --query "containers[0].instanceView.currentState.detailStatus" \
-                -o tsv 2>/dev/null || true)
-
-            if [ "$CURRENT_STATE" = "Running" ] && \
-               [[ "$DETAIL_STATUS" != *"CrashLoopBackOff"* ]]; then
-
-                DB_READY=true
-                break
-            fi
-        fi
-    fi
-
-    sleep 10
-done
-
-if [ "$DB_READY" != true ]; then
-    echo ""
-    echo "ERRO: Oracle não ficou disponível."
-
-    az container show \
-        --resource-group "$RESOURCE_GROUP" \
-        --name "$ACI_DB_NAME" \
-        --query "containers[0].instanceView" \
-        -o json
-
-    exit 1
-fi
-
-echo ""
-echo "Oracle aparentemente está estável."
-
-# ------------------------------------------------------------
-# 17. ACI aplicação
-# ------------------------------------------------------------
-
-echo ""
-echo "===> 10) Criando ACI da aplicação..."
-
-DATABASE_URL="jdbc:oracle:thin:@//${DB_FQDN}:1521/FREEPDB1"
-
+echo "===> 7) Criando o ACI da aplicação (rm${RM}-app) apontando para o banco"
 az container create \
-    --resource-group "$RESOURCE_GROUP" \
-    --name "$ACI_APP_NAME" \
-    --image "${ACR_LOGIN_SERVER}/${APP_IMAGE_NAME}:${IMAGE_TAG}" \
-    --registry-login-server "$ACR_LOGIN_SERVER" \
-    --registry-username "$ACR_USERNAME" \
-    --registry-password "$ACR_PASSWORD" \
-    --cpu 1 \
-    --memory 2 \
-    --os-type Linux \
-    --ports 8080 \
-    --ip-address Public \
-    --dns-name-label "$APP_DNS_LABEL" \
-    --environment-variables \
-        DATABASE_URL="$DATABASE_URL" \
-        DATABASE_USERNAME="$APP_USER" \
-        JWT_EXPIRATION="$JWT_EXPIRATION" \
-    --secure-environment-variables \
-        DATABASE_PASSWORD="$APP_USER_PASSWORD" \
-        JWT_SECRET="$JWT_SECRET" \
-    --output none
-
-# ------------------------------------------------------------
-# 18. Aguardar aplicação
-# ------------------------------------------------------------
-
-echo ""
-echo "===> Aguardando aplicação Spring Boot..."
-
-APP_READY=false
-
-for ((i=1; i<=40; i++)); do
-
-    APP_STATE=$(az container show \
-        --resource-group "$RESOURCE_GROUP" \
-        --name "$ACI_APP_NAME" \
-        --query "containers[0].instanceView.currentState.state" \
-        -o tsv 2>/dev/null || true)
-
-    APP_DETAIL=$(az container show \
-        --resource-group "$RESOURCE_GROUP" \
-        --name "$ACI_APP_NAME" \
-        --query "containers[0].instanceView.currentState.detailStatus" \
-        -o tsv 2>/dev/null || true)
-
-    echo "Tentativa $i/40 - estado: ${APP_STATE:-unknown} - ${APP_DETAIL:-unknown}"
-
-    if [[ "$APP_DETAIL" == *"CrashLoopBackOff"* ]] || \
-       [[ "$APP_DETAIL" == *"Error"* ]]; then
-
-        echo ""
-        echo "ERRO: aplicação entrou em estado de falha."
-        echo ""
-        az container logs \
-            --resource-group "$RESOURCE_GROUP" \
-            --name "$ACI_APP_NAME" || true
-
-        exit 1
-    fi
-
-    if [ "$APP_STATE" = "Running" ]; then
-        APP_READY=true
-        break
-    fi
-
-    sleep 10
-done
-
-if [ "$APP_READY" != true ]; then
-    echo ""
-    echo "ERRO: aplicação não ficou disponível."
-
-    az container show \
-        --resource-group "$RESOURCE_GROUP" \
-        --name "$ACI_APP_NAME" \
-        --query "containers[0].instanceView" \
-        -o json
-
-    az container logs \
-        --resource-group "$RESOURCE_GROUP" \
-        --name "$ACI_APP_NAME" || true
-
-    exit 1
-fi
-
-# ------------------------------------------------------------
-# 19. Informações finais
-# ------------------------------------------------------------
+  --resource-group "$RESOURCE_GROUP" \
+  --name "$ACI_APP_NAME" \
+  --image "${ACR_LOGIN_SERVER}/${APP_IMAGE_NAME}:${IMAGE_TAG}" \
+  --registry-login-server "$ACR_LOGIN_SERVER" \
+  --registry-username "$ACR_USERNAME" \
+  --registry-password "$ACR_PASSWORD" \
+  --cpu 1 --memory 2 \
+  --os-type Linux \
+  --ports 8080 \
+  --ip-address Public \
+  --dns-name-label "$APP_DNS_LABEL" \
+  --environment-variables \
+      DATABASE_URL="jdbc:oracle:thin:@${DB_FQDN}:1521/FREEPDB1" \
+      DATABASE_USERNAME="$APP_USER" \
+      DATABASE_PASSWORD="$APP_USER_PASSWORD" \
+      JWT_SECRET="$JWT_SECRET" \
+      JWT_EXPIRATION="$JWT_EXPIRATION"
 
 APP_FQDN=$(az container show \
-    --resource-group "$RESOURCE_GROUP" \
-    --name "$ACI_APP_NAME" \
-    --query "ipAddress.fqdn" \
-    -o tsv)
+  --resource-group "$RESOURCE_GROUP" \
+  --name "$ACI_APP_NAME" \
+  --query "ipAddress.fqdn" -o tsv)
 
-echo ""
 echo "============================================================"
-echo " SpaceCrop - Deploy concluído"
-echo "============================================================"
-echo " Resource Group: $RESOURCE_GROUP"
-echo " ACR:            $ACR_LOGIN_SERVER"
-echo " ACI DB:         $ACI_DB_NAME"
-echo " ACI APP:        $ACI_APP_NAME"
-echo ""
-echo " API:"
-echo " http://${APP_FQDN}:8080"
-echo ""
-echo " Swagger:"
-echo " http://${APP_FQDN}:8080/swagger"
-echo ""
-echo " Banco:"
-echo " ${DB_FQDN}:1521/FREEPDB1"
-echo ""
-echo " Oracle User:"
-echo " $APP_USER"
+echo " Deploy concluído!"
+echo " API:      http://${APP_FQDN}:8080"
+echo " Swagger:  http://${APP_FQDN}:8080/swagger"
+echo " Banco:    ${DB_FQDN}:1521/FREEPDB1"
 echo "============================================================"
