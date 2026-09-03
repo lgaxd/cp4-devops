@@ -1,13 +1,10 @@
+# =========================================================
+# SpaceCrop Database - Oracle Database Free 23c
+# =========================================================
 
 FROM gvenzl/oracle-free:23-slim
 
-COPY spacecrop_ddl.sql /container-entrypoint-initdb.d/01-spacecrop-ddl.sql
-COPY db-entrypoint.sh /opt/oracle/db-entrypoint.sh
-
-USER root
-RUN chmod +x /opt/oracle/db-entrypoint.sh
-USER oracle
+# O DDL será executado durante a inicialização do Oracle.
+COPY docker/spacecrop_ddl.sql /container-entrypoint-initdb.d/01-spacecrop-ddl.sql
 
 EXPOSE 1521
-
-ENTRYPOINT ["/opt/oracle/db-entrypoint.sh"]
