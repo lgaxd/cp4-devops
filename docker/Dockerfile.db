@@ -1,9 +1,4 @@
-# =========================================================
-# SpaceCrop Database - Oracle Database Free 23c
-# Datafiles ficam no disco local do container (SMB/Azure
-# Files não é compatível com os datafiles do Oracle).
-# A Conta de Armazenamento é usada para backups periódicos.
-# =========================================================
+
 FROM gvenzl/oracle-free:23-slim
 
 COPY spacecrop_ddl.sql /container-entrypoint-initdb.d/01-spacecrop-ddl.sql
